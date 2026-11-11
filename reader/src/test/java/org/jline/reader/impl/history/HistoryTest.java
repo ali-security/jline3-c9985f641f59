@@ -22,6 +22,7 @@ import org.jline.reader.impl.ReaderTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -185,5 +186,68 @@ public class HistoryTest extends ReaderTestSupport {
         assertTrue(defaultHistory.matchPatterns("foo*", "foobar"));
         assertTrue(defaultHistory.matchPatterns("foo:bar", "bar"));
         assertFalse(defaultHistory.matchPatterns("foo*", "bar"));
+    }
+
+    private static String evilLine() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 50; i++) {
+            sb.append('a');
+        }
+        return sb.append('!').toString();
+    }
+
+    @Test
+    @Timeout(value = 10, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    public void testHistoryIgnoreEscapedCharactersAreNotRegex() {
+        // Escaped characters used to be copied raw into the regex, so this
+        // value compiled to the catastrophic backtracking pattern "(a+)+\1$"
+        // (the back reference defeats the loop memoization of JDK 9+)
+        reader.setVariable(LineReader.HISTORY_IGNORE, "\\(\\a\\+\\)\\+\\\\\\1\\$");
+        String evil = evilLine();
+        history.add(evil);
+        history.add("(a+)+\\1$");
+        assertHistoryContains(0, evil);
+    }
+
+    @Test
+    @Timeout(value = 10, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    public void testHistoryIgnoreRegexMetacharactersAreLiteral() {
+        // Unescaped characters used to be copied raw into the regex as well
+        reader.setVariable(LineReader.HISTORY_IGNORE, "(a+)+\\\\1$");
+        String evil = evilLine();
+        history.add(evil);
+        history.add("aaa");
+        history.add("(a+)+\\1$");
+        assertHistoryContains(0, evil, "aaa");
+    }
+
+    @Test
+    public void testHistoryIgnoreGlobAndAlternatives() {
+        reader.setVariable(LineReader.HISTORY_IGNORE, "ls*:cd");
+        history.add("ls");
+        history.add("ls -l");
+        history.add("cd");
+        history.add("cd /tmp");
+        history.add("pwd");
+        history.add("echo ls");
+        assertHistoryContains(0, "cd /tmp", "pwd", "echo ls");
+    }
+
+    @Test
+    public void testHistoryIgnoreEscapedGlobCharacters() {
+        reader.setVariable(LineReader.HISTORY_IGNORE, "a\\*b\\:c");
+        history.add("a*b:c");
+        history.add("axb:c");
+        history.add("a*b");
+        history.add("c");
+        assertHistoryContains(0, "axb:c", "a*b", "c");
+    }
+
+    @Test
+    public void testHistoryIgnoreTrailingBackslash() {
+        reader.setVariable(LineReader.HISTORY_IGNORE, "foo\\");
+        history.add("foo\\");
+        history.add("foo");
+        assertHistoryContains(0, "foo");
     }
 }

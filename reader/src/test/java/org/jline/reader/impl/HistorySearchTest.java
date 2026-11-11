@@ -9,14 +9,19 @@
 package org.jline.reader.impl;
 
 import java.io.ByteArrayInputStream;
+import java.lang.reflect.Method;
+import java.util.List;
+import java.util.regex.Pattern;
 
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.jline.keymap.KeyMap.translate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 public class HistorySearchTest extends ReaderTestSupport {
@@ -140,6 +145,42 @@ public class HistorySearchTest extends ReaderTestSupport {
         }
         assertEquals("", reader.getBuffer().toString());
         assertEquals(4, history.size());
+    }
+
+    @Test
+    @Timeout(value = 20, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    public void testSearchMatchingIsProtectedAgainstReDoS() throws Exception {
+        // matches() runs the incremental search pattern against the buffer and
+        // every history line; a catastrophic backtracking pattern must not hang it
+        // (the back reference defeats the loop memoization of JDK 9+)
+        Method matches = LineReaderImpl.class.getDeclaredMethod("matches", Pattern.class, String.class, int.class);
+        matches.setAccessible(true);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 50; i++) {
+            sb.append('a');
+        }
+        String line = sb.append('!').toString();
+
+        long start = System.nanoTime();
+        List<?> evil = (List<?>) matches.invoke(reader, Pattern.compile("(a+)+\\1$"), line, 0);
+        long elapsedMs = (System.nanoTime() - start) / 1000000;
+        assertTrue(evil.isEmpty());
+        assertTrue(elapsedMs < 10000, "Search took " + elapsedMs + " ms");
+
+        List<?> found = (List<?>) matches.invoke(reader, Pattern.compile("a+!"), line, 0);
+        assertEquals(1, found.size());
+    }
+
+    @Test
+    public void testPreviousCommandSuggestionTreatsBufferLiterally() throws Exception {
+        DefaultHistory history = setupHistory();
+        history.add("echo (a+)+$ [x] \\Q.*");
+        Method matchPreviousCommand = LineReaderImpl.class.getDeclaredMethod("matchPreviousCommand", String.class);
+        matchPreviousCommand.setAccessible(true);
+        assertEquals(" [x] \\Q.*", matchPreviousCommand.invoke(reader, "echo (a+)+$"));
+        assertEquals(".*", matchPreviousCommand.invoke(reader, "echo (a+)+$ [x] \\Q"));
+        assertEquals("", matchPreviousCommand.invoke(reader, "ech."));
+        assertEquals("addle", matchPreviousCommand.invoke(reader, "f"));
     }
 
     @Test
